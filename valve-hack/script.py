@@ -32,8 +32,6 @@ def on_connect(client, userdata, flags, rc):
     client.publish('brewcast/device/config/valve-hack',
                    json.dumps(CONFIG),
                    retain=True)
-    if ser.is_open:
-        ser.write(b'\n')
 
 
 def on_message(client, userdata, message):
