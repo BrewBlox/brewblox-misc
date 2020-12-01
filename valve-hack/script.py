@@ -3,11 +3,18 @@ Bridges USB connection to valve board and MQTT eventbus
 """
 
 import json
+import signal
+import traceback
 from os import getenv
+from queue import Queue
 
 import serial
 from paho.mqtt import client as mqtt
+from serial.threaded import LineReader, ReaderThread
 
+MQTT_HOST = getenv('MQTT_HOST', 'eventbus')
+SERIAL_PORT = getenv('SERIAL_PORT', '/dev/ttyACM0')
+SERIAL_BAUDRATE = getenv('SERIAL_BAUDRATE', 9600)
 FIELDS = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
 CONFIG = {
     'id': 'valve-hack',
@@ -20,14 +27,17 @@ CONFIG = {
 }
 
 
-ser = serial.Serial(port=getenv('PORT', '/dev/ttyACM0'),
-                    baudrate=9600,
-                    timeout=1)
+ser = serial.Serial()
 client = mqtt.Client()
+msg_q = Queue()
+
+
+def sig_handler(signum, frame):
+    raise KeyboardInterrupt()
 
 
 def on_connect(client, userdata, flags, rc):
-    print('connected!')
+    print('MQTT connected')
     client.subscribe('brewcast/device/change/valve-hack')
     client.publish('brewcast/device/config/valve-hack',
                    json.dumps(CONFIG),
@@ -36,48 +46,80 @@ def on_connect(client, userdata, flags, rc):
 
 def on_message(client, userdata, message):
     data = json.loads(message.payload)
-    raw = ''.join([
+    cmd = ''.join([
         k + ('1' if v == 'open' else '0')
         for k, v in data['setting'].items()])
-    print('writing', raw)
-    if ser.is_open:
-        ser.write(raw.encode() + b'\n')
+    msg_q.put(('serial', cmd))
+
+
+def on_disconnect(client, userdata, rc):
+    print('MQTT disconnected')
+
+
+class SerialHandler(LineReader):
+
+    TERMINATOR = b'\n'
+
+    def connection_made(self, transport):
+        super(SerialHandler, self).connection_made(transport)
+        print('Serial connected')
+        msg_q.put(('serial', '?'))  # Prompt status response
+
+    def handle_line(self, data):
+        data = data.rstrip()
+
+        if '|' in data:
+            print(data)
+            return
+
+        if data:
+            keys = data[::2]
+            values = ['open' if v == '1' else 'closed' for v in data[1::2]]
+            msg = {
+                'id': 'valve-hack',
+                'value': {k: v for (k, v) in zip(keys, values)}
+            }
+            msg_q.put(('mqtt', msg))
+
+    def connection_lost(self, exc):
+        if exc:
+            traceback.print_exc(exc)
+        print('Serial disconnected')
 
 
 try:
+    signal.signal(signal.SIGTERM, sig_handler)
+
+    print(f'================ serial={SERIAL_PORT}, mqtt={MQTT_HOST} ================')
+
+    ser.port = SERIAL_PORT
+    ser.baudrate = SERIAL_BAUDRATE
+    ser.open()
+
     client.on_connect = on_connect
     client.on_message = on_message
+    client.on_disconnect = on_disconnect
 
-    client.connect_async(host='eventbus')
+    client.connect_async(host=MQTT_HOST)
     client.loop_start()
 
-    buffer = ''
+    with ReaderThread(ser, SerialHandler) as protocol:
+        protocol: LineReader
+        while True:
+            target, msg = msg_q.get()
+            print('Sending', target, msg)
 
-    while True:
-        buffer += ser.read(8 + 8 + 1).decode()
-        output = buffer.splitlines(True)
+            if target == 'serial':
+                protocol.write_line(msg)
 
-        if not output:
-            continue
+            if target == 'mqtt':
+                client.publish('brewcast/device/state/valve-hack',
+                               json.dumps(msg),
+                               retain=True)
 
-        if output[-1].endswith('\n'):
-            buffer = ''
-        else:
-            buffer = output.pop()  # send incomplete message back to buffer
-
-        if output:
-            data = output.pop().rstrip()  # We only care about the last message
-            keys = data[::2]
-            values = ['open' if v == '1' else 'closed' for v in data[1::2]]
-            print('publishing', values)
-            client.publish('brewcast/device/state/valve-hack',
-                           json.dumps({
-                               'id': 'valve-hack',
-                               'value': {k: v for (k, v) in zip(keys, values)}
-                           }),
-                           retain=True)
+except KeyboardInterrupt:
+    pass
 
 finally:
-    print('Stopping...')
     client.loop_stop()
     ser.close()
