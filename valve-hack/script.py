@@ -48,7 +48,7 @@ def on_message(client, userdata, message):
     data = json.loads(message.payload)
     cmd = ''.join([
         k + ('1' if v == 'open' else '0')
-        for k, v in data['setting'].items()])
+        for k, v in data['desiredValues'].items()])
     msg_q.put(('serial', cmd))
 
 
@@ -77,7 +77,7 @@ class SerialHandler(LineReader):
             values = ['open' if v == '1' else 'closed' for v in data[1::2]]
             msg = {
                 'id': 'valve-hack',
-                'value': {k: v for (k, v) in zip(keys, values)}
+                'values': {k: v for (k, v) in zip(keys, values)}
             }
             msg_q.put(('mqtt', msg))
 
