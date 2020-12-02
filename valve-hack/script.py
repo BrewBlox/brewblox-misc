@@ -15,13 +15,13 @@ from serial.threaded import LineReader, ReaderThread
 MQTT_HOST = getenv('MQTT_HOST', 'eventbus')
 SERIAL_PORT = getenv('SERIAL_PORT', '/dev/ttyACM0')
 SERIAL_BAUDRATE = getenv('SERIAL_BAUDRATE', 9600)
-FIELDS = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
+FIELDS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
 CONFIG = {
     'id': 'valve-hack',
     'title': 'Valve Hack',
     'fields': FIELDS,
     'editable': True,
-    'valueName': {v: f'Valve {v.upper()}' for v in FIELDS},
+    'valueName': {v: f'Valve {v}' for v in FIELDS},
     'valueType': 'enum',
     'choices': ['open', 'closed'],
 }
@@ -36,6 +36,10 @@ def sig_handler(signum, frame):
     raise KeyboardInterrupt()
 
 
+def strex(ex):
+    return f'{type(ex).__name__}({str(ex)})'
+
+
 def on_connect(client, userdata, flags, rc):
     print('MQTT connected')
     client.subscribe('brewcast/device/change/valve-hack')
@@ -45,11 +49,15 @@ def on_connect(client, userdata, flags, rc):
 
 
 def on_message(client, userdata, message):
-    data = json.loads(message.payload)
-    cmd = ''.join([
-        k + ('1' if v == 'open' else '0')
-        for k, v in data['desiredValues'].items()])
-    msg_q.put(('serial', cmd))
+    try:
+        data = json.loads(message.payload)
+        cmd = ''.join([
+            k + ('1' if v == 'open' else '0')
+            for k, v in data['desiredValues'].items()])
+        msg_q.put(('serial', cmd))
+
+    except Exception as ex:
+        traceback.print_exc(ex)
 
 
 def on_disconnect(client, userdata, rc):
@@ -61,29 +69,32 @@ class SerialHandler(LineReader):
     TERMINATOR = b'\n'
 
     def connection_made(self, transport):
-        super(SerialHandler, self).connection_made(transport)
+        super().connection_made(transport)
         print('Serial connected')
         msg_q.put(('serial', '?'))  # Prompt status response
 
     def handle_line(self, data):
-        data = data.rstrip()
+        try:
+            data = data.rstrip()
 
-        if '|' in data:
-            print(data)
-            return
+            if '|' in data:
+                print(data)
+                return
 
-        if data:
-            keys = data[::2]
-            values = ['open' if v == '1' else 'closed' for v in data[1::2]]
-            msg = {
-                'id': 'valve-hack',
-                'values': {k: v for (k, v) in zip(keys, values)}
-            }
-            msg_q.put(('mqtt', msg))
+            if data:
+                keys = data[::2]
+                values = ['open' if v == '1' else 'closed' for v in data[1::2]]
+                msg = {
+                    'id': 'valve-hack',
+                    'values': {k: v for (k, v) in zip(keys, values)}
+                }
+                msg_q.put(('mqtt', msg))
+
+        except Exception as ex:
+            traceback.print_exc(ex)
 
     def connection_lost(self, exc):
-        if exc:
-            traceback.print_exc(exc)
+        super().connection_lost(exc)
         print('Serial disconnected')
 
 
@@ -119,6 +130,9 @@ try:
 
 except KeyboardInterrupt:
     pass
+
+except Exception as ex:
+    traceback.print_exc(ex)
 
 finally:
     client.loop_stop()
