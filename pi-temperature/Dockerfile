@@ -1,4 +1,6 @@
 FROM ubuntu:22.04
+LABEL org.opencontainers.image.source=https://github.com/BrewBlox/brewblox-misc
+
 WORKDIR /app
 
 COPY ./publish-temp.sh /app/publish-temp.sh
